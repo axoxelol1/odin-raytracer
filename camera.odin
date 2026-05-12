@@ -72,7 +72,7 @@ make_camera :: proc(
 	return cam
 }
 
-render :: proc(cam: Camera, world: []Hittable) {
+render :: proc(cam: Camera, world: Hittable_List) {
 	pool: thread.Pool
 	colors := make([dynamic]Color, cam.image_width * cam.image_height)
 	task_data := make([dynamic]Thread_Data, cam.image_height)
@@ -85,7 +85,7 @@ render :: proc(cam: Camera, world: []Hittable) {
 	Thread_Data :: struct {
 		cam:        Camera,
 		colors:     []Color,
-		world:      []Hittable,
+		world:      Hittable_List,
 		j:          int,
 		done_count: ^int,
 	}
@@ -123,7 +123,7 @@ render :: proc(cam: Camera, world: []Hittable) {
 }
 
 
-ray_color :: proc(ray: Ray, depth: int, world: []Hittable) -> Color {
+ray_color :: proc(ray: Ray, depth: int, world: Hittable_List) -> Color {
 	if (depth <= 0) {
 		return {0, 0, 0}
 	}

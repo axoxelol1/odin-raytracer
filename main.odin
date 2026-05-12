@@ -40,14 +40,22 @@ Sphere :: struct {
 	center:   Ray,
 	radius:   f64,
 	material: Material,
+	bbox:     AABB,
 }
 
-make_static_sphere :: proc(center: Point3, radius: f64, material: Material) ->  Sphere {
-	return {{center, {0, 0, 0}, 0}, max(0, radius), material}
+make_static_sphere :: proc(center: Point3, radius: f64, material: Material) -> Sphere {
+	rvec := Vec3{radius, radius, radius}
+	bbox := make_aabb(center - rvec, center + rvec)
+	return {{center, {0, 0, 0}, 0}, max(0, radius), material, bbox}
 }
 
 make_moving_sphere :: proc(center1, center2: Point3, radius: f64, material: Material) -> Sphere {
-	return {{center1, center2 - center1, 0}, max(0, radius), material}
+	rvec := Vec3{radius, radius, radius}
+	center := Ray{center1, center2 - center1, 0}
+	bbox1 := make_aabb(ray_at(center, 0) - rvec, ray_at(center, 0) + rvec)
+	bbox2 := make_aabb(ray_at(center, 1) - rvec, ray_at(center, 1) + rvec)
+	bbox := merge_aabbs(bbox1, bbox2)
+	return {center, max(0, radius), material, bbox}
 }
 
 Hit_Info :: struct {
@@ -60,11 +68,12 @@ Hit_Info :: struct {
 
 Hittable :: union {
 	Sphere,
+	Bvh_node,
 }
 
 
 set_face_normal :: proc(record: ^Hit_Info, ray: Ray, outward_normal: Vec3) {
-// `outward_normal` is assumed to have unit length
+	// `outward_normal` is assumed to have unit length
 	record.front_face = la.dot(ray.direction, outward_normal) < 0
 	record.normal = outward_normal if record.front_face else -outward_normal
 }
@@ -167,18 +176,25 @@ hit_sphere :: proc(sphere: Sphere, ray: Ray, ray_t: Interval) -> (bool, Hit_Info
 	return true, info
 }
 
-hit_list :: proc(list: []Hittable, ray: Ray, ray_t: Interval) -> (bool, Hit_Info) {
+hit_object :: proc(hittable: Hittable, ray: Ray, ray_t: Interval) -> (hit: bool, info: Hit_Info) {
+	switch object in hittable {
+	case Sphere:
+		hit, info = hit_sphere(object, ray, ray_t)
+	case Bvh_node:
+		hit, info = hit_bvh_node(object, ray, ray_t)
+	}
+	return
+}
+
+hit_list :: proc(list: Hittable_List, ray: Ray, ray_t: Interval) -> (bool, Hit_Info) {
 	info := Hit_Info{}
 	hit_anything: bool
 	closest_so_far := ray_t.max
 
 	hit: bool
 	temp_info: Hit_Info
-	for hittable in list {
-		switch object in hittable {
-		case Sphere:
-			hit, temp_info = hit_sphere(object, ray, Interval{ray_t.min, closest_so_far})
-		}
+	for hittable in list.list {
+		hit, temp_info = hit_object(hittable, ray, {ray_t.min, closest_so_far})
 		if hit {
 			hit_anything = true
 			closest_so_far = temp_info.t
@@ -188,22 +204,31 @@ hit_list :: proc(list: []Hittable, ray: Ray, ray_t: Interval) -> (bool, Hit_Info
 	return hit_anything, info
 }
 
+Hittable_List :: struct {
+	list: [dynamic]Hittable,
+	bbox: AABB,
+}
+
+get_bbox :: proc(hittable: Hittable) -> AABB {
+	switch object in hittable {
+	case Sphere:
+		return object.bbox
+	case Bvh_node:
+		return object.bbox
+	}
+	unreachable()
+}
+
+append_to_world :: proc(world: ^Hittable_List, object: Hittable) {
+	append(&world.list, object)
+	world.bbox = merge_aabbs(world.bbox, get_bbox(object))
+}
 
 main :: proc() {
-	world := make([dynamic]Hittable)
-	material_ground := Lambertian_Material{{0.8, 0.8, 0}}
-	material_center := Lambertian_Material{{0.1, 0.2, 0.5}}
-	material_left := Dielectric_Material{1.5}
-	material_bubble := Dielectric_Material{1 / 1.5}
-	material_right := Metal_Material{{0.8, 0.6, 0.2}, 1}
-	append(&world, make_static_sphere({0.0, -100.5, -1.0}, 100.0, material_ground))
-	append(&world, make_static_sphere({0.0, 0.0, -1.2}, 0.5, material_center))
-	append(&world, make_static_sphere({-1.0, 0.0, -1.0}, 0.5, material_left))
-	append(&world, make_static_sphere({-1.0, 0.0, -1.0}, 0.4, material_bubble))
-	append(&world, make_static_sphere({1.0, 0.0, -1.0}, 0.5, material_right))
+	world := Hittable_List{make([dynamic]Hittable), {}}
 
 	ground_material := Lambertian_Material{{0.5, 0.5, 0.5}}
-	append(&world, Sphere{{0, -1000, 0}, 1000, ground_material})
+	append_to_world(&world, make_static_sphere({0, -1000, 0}, 1000, ground_material))
 	for a in -11 ..< 11 {
 		for b in -11 ..< 11 {
 			choose_mat := rand.float64()
@@ -213,29 +238,49 @@ main :: proc() {
 				if (choose_mat < 0.8) {
 					// diffuse
 					albedo := random_vec() * random_vec()
-          center2 := center + {0, rand.float64_range(0,0.5), 0}
+					center2 := center + {0, rand.float64_range(0, 0.5), 0}
 					sphere_material := Lambertian_Material{albedo}
-					append(&world, make_moving_sphere(center, center2, 0.2, sphere_material))
+					append_to_world(
+						&world,
+						make_moving_sphere(center, center2, 0.2, sphere_material),
+					)
 				} else if (choose_mat < 0.95) {
 					// metal
 					albedo := random_vec_2(0.5, 1)
 					fuzz := rand.float64_range(0, 0.5)
 					sphere_material := Metal_Material{albedo, fuzz}
-					append(&world, make_static_sphere(center, 0.2, sphere_material))
+					append_to_world(&world, make_static_sphere(center, 0.2, sphere_material))
 				} else {
 					// glass
 					sphere_material = Dielectric_Material{1.5}
-					append(&world, make_static_sphere(center, 0.2, sphere_material))
+					append_to_world(&world, make_static_sphere(center, 0.2, sphere_material))
 				}
 			}
 		}
 	}
 	material1 := Dielectric_Material{1.5}
-	append(&world, Sphere{{0, 1, 0}, 1.0, material1})
+	append_to_world(&world, make_static_sphere({0, 1, 0}, 1.0, material1))
 	material2 := Lambertian_Material{{0.4, 0.2, 0.1}}
-	append(&world, Sphere{{-4, 1, 0}, 1.0, material2})
+	append_to_world(&world, make_static_sphere({-4, 1, 0}, 1.0, material2))
 	material3 := Metal_Material{{0.7, 0.6, 0.5}, 0}
-	append(&world, Sphere{{4, 1, 0}, 1.0, material3})
-	cam := make_camera(16.0 / 9.0, 20, {13, 2, 3}, {0, 0, 0}, {0, 1, 0}, 0.6, 10, 1200, 500, 50)
-	render(cam, world[:])
+	append_to_world(&world, make_static_sphere({4, 1, 0}, 1.0, material3))
+
+	world_bvh := make_bvh_node(world.list[:], 0, len(world.list))
+	world_list := make([dynamic]Hittable)
+	world = Hittable_List{world_list, {}}
+	append_to_world(&world, world_bvh)
+
+	cam := make_camera(16.0 / 9.0, 20, {13, 2, 3}, {0, 0, 0}, {0, 1, 0}, 0.6, 10, 400, 100, 50)
+	render(cam, world)
 }
+
+// material_ground := Lambertian_Material{{0.8, 0.8, 0}}
+// material_center := Lambertian_Material{{0.1, 0.2, 0.5}}
+// material_left := Dielectric_Material{1.5}
+// material_bubble := Dielectric_Material{1 / 1.5}
+// material_right := Metal_Material{{0.8, 0.6, 0.2}, 1}
+// append(&world, make_static_sphere({0.0, -100.5, -1.0}, 100.0, material_ground))
+// append(&world, make_static_sphere({0.0, 0.0, -1.2}, 0.5, material_center))
+// append(&world, make_static_sphere({-1.0, 0.0, -1.0}, 0.5, material_left))
+// append(&world, make_static_sphere({-1.0, 0.0, -1.0}, 0.4, material_bubble))
+// append(&world, make_static_sphere({1.0, 0.0, -1.0}, 0.5, material_right))
