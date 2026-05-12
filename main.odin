@@ -270,7 +270,7 @@ main :: proc() {
 	world = Hittable_List{world_list, {}}
 	append_to_world(&world, world_bvh)
 
-	cam := make_camera(16.0 / 9.0, 20, {13, 2, 3}, {0, 0, 0}, {0, 1, 0}, 0.6, 10, 400, 100, 50)
+	cam := make_camera(16.0 / 9.0, 20, {13, 2, 3}, {0, 0, 0}, {0, 1, 0}, 0.6, 10, 4000, 100, 50)
 	render(cam, world)
 }
 
